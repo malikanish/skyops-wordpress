@@ -1,0 +1,104 @@
+!/bin/bash
+
+# Exit immediately if a command exits with a non-zero status
+set -e
+
+MYSQL_ROOT_PASSWORD="rootpassword"
+WP_DB_NAME="wordpress"
+WP_DB_USER="wpuser"
+WP_DB_PASS="password"
+WP_DIR="/var/www/html"
+
+# Update package lists and upgrade installed packages
+echo "Updating system packages..."
+sudo apt update && sudo apt upgrade -y
+
+# Pre-configure MySQL root password to avoid interactive prompt
+echo "Setting MySQL root password for non-interactive installation..."
+sudo debconf-set-selections <<< "mysql-server mysql-server/root_password password $MYSQL_ROOT_PASSWORD"
+sudo debconf-set-selections <<< "mysql-server mysql-server/root_password_again password $MYSQL_ROOT_PASSWORD"
+
+# Install Apache web server
+echo "Installing Apache..."
+sudo apt install -y apache2
+
+# Enable Apache to start on boot and restart service
+sudo systemctl enable apache2
+sudo systemctl restart apache2
+
+# Install MySQL database server
+echo "Installing MySQL..."
+sudo apt install -y mysql-server
+
+# Start MySQL service
+sudo systemctl start mysql
+sudo systemctl enable mysql
+
+# Run mysql_secure_installation in a non-interactive mode
+echo "Securing MySQL installation..."
+echo -e "n\n$MYSQL_ROOT_PASSWORD\n$MYSQL_ROOT_PASSWORD\ny\ny\ny\ny\ny" | sudo mysql_secure_installation
+
+# Restart MySQL service to apply security changes
+echo "Restarting MySQL..."
+sudo systemctl restart mysql
+
+# Install PHP and required extensions
+echo "Installing PHP and necessary extensions..."
+sudo apt install -y php libapache2-mod-php php-mysql php-curl php-xml php-mbstring php-zip
+
+# Restart Apache to load PHP modules
+sudo systemctl restart apache2
+
+# Remove existing WordPress files to avoid conflicts
+if [ -d "$WP_DIR" ]; then
+    echo "Removing existing WordPress files..."
+    sudo rm -rf "$WP_DIR"/*
+fi
+
+# Navigate to /tmp directory and download WordPress
+echo "Downloading WordPress..."
+cd /tmp
+wget https://wordpress.org/latest.tar.gz
+
+# Extract WordPress files
+echo "Extracting WordPress files..."
+tar xzvf latest.tar.gz
+
+# Move WordPress files to the web server root directory
+echo "Setting up WordPress..."
+sudo mv wordpress/* "$WP_DIR/"
+
+# Set correct ownership and permissions
+echo "Setting file permissions..."
+sudo chown -R www-data:www-data "$WP_DIR/"
+sudo chmod -R 755 "$WP_DIR/"
+
+# Check if the WordPress database already exists
+echo "Checking if the WordPress database exists..."
+DB_EXISTS=$(sudo mysql -u root -p"$MYSQL_ROOT_PASSWORD" -sse "SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME='$WP_DB_NAME'")
+
+if [ "$DB_EXISTS" != "$WP_DB_NAME" ]; then
+    echo "Creating WordPress database and user..."
+    sudo mysql -u root -p"$MYSQL_ROOT_PASSWORD" <<EOF
+    CREATE DATABASE $WP_DB_NAME;
+    CREATE USER '$WP_DB_USER'@'localhost' IDENTIFIED BY '$WP_DB_PASS';
+    GRANT ALL PRIVILEGES ON $WP_DB_NAME.* TO '$WP_DB_USER'@'localhost';
+    FLUSH PRIVILEGES;
+EOF
+else
+    echo "Database '$WP_DB_NAME' already exists. Skipping creation."
+fi
+
+# Navigate to WordPress directory and configure wp-config.php
+echo "Configuring WordPress..."
+cd "$WP_DIR"
+sudo cp wp-config-sample.php wp-config.php
+sudo sed -i "s/database_name_here/$WP_DB_NAME/" wp-config.php
+sudo sed -i "s/username_here/$WP_DB_USER/" wp-config.php
+sudo sed -i "s/password_here/$WP_DB_PASS/" wp-config.php
+
+# Restart Apache to apply changes
+echo "Restarting Apache..."
+sudo systemctl restart apache2
+
+echo "WordPress installation completed. Access it via your browser at http://your_server_ip"
